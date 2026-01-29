@@ -54,45 +54,82 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 app.post("/ai/chat", checkLimit, async (req, res) => {
   const { history, context } = req.body;
 
-  try {
-    const prompt = `
-      You are ZenFinance AI, a helpful personal finance assistant.
-      User Financial Context:
-      ${JSON.stringify(context, null, 2)}
+  // Set headers for streaming
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Transfer-Encoding", "chunked");
 
-      Response Guidelines:
-      1. Be concise and professional.
-      2. Use Markdown for formatting.
-      3. Use currency symbols appropriately.
-      4. Suggest actionable steps.
-      5. To suggest a follow-up question, wrap it in <suggestion>Question Text</suggestion> at the end of your response.
+  try {
+    const systemInstruction = `
+      You are ZenFinance AI, a helpful and minimalist financial assistant. 
+      Your goal is to provide clear, actionable financial advice based on the user's data.
+      
+      Current Financial Context:
+      ${JSON.stringify(context, null, 2)}
+      
+      Rules:
+      1. Be concise and friendly.
+      2. Use Markdown for formatting. Use headers (###), bold text, and bullet points to make info digestible.
+      3. Use double newlines between paragraphs and headers to ensure proper spacing.
+      4. If asked about spending, reference their specific categories and limits.
+      5. Never give professional investment advice; always include a disclaimer if needed but keep it brief.
+      6. Always respond in the language the user is using.
+      7. At the end of your response, provide 2-3 brief follow-up suggestions in the format:
+         <suggestion>Question 1?</suggestion>
+         <suggestion>Question 2?</suggestion>
     `;
 
+    // Map history to Google's format
+    const contents = history.map((m) => ({
+      role: m.role === "user" ? "user" : "model",
+      parts: [{ text: m.content }],
+    }));
+
+    // Start chat with system instruction
     const chat = model.startChat({
-      history: [
-        { role: "user", parts: [{ text: prompt }] },
-        {
-          role: "model",
-          parts: [
-            {
-              text: "Understood. I have your financial context. How can I assist you today?",
-            },
-          ],
-        },
-        ...history.slice(0, -1).map((msg) => ({
-          role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.content }],
-        })),
-      ],
+      history: contents.slice(0, -1),
+      systemInstruction: {
+        role: "system",
+        parts: [{ text: systemInstruction }],
+      },
     });
 
     const lastMessage = history[history.length - 1].content;
-    const result = await chat.sendMessage(lastMessage);
-    const response = await result.response;
-    res.json({ text: response.text() });
+    const result = await chat.sendMessageStream(lastMessage);
+
+    for await (const chunk of result.stream) {
+      const chunkText = chunk.text();
+      res.write(chunkText);
+    }
+    res.end();
   } catch (error) {
     console.error("AI Error:", error);
-    res.status(500).json({ error: "Failed to process AI request" });
+    // If headers were already sent, we can't send a JSON error
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to process AI request" });
+    } else {
+      res.end();
+    }
+  }
+});
+
+app.post("/ai/title", checkLimit, async (req, res) => {
+  const { question, answer } = req.body;
+
+  try {
+    const prompt = `
+      Based on this first exchange in a financial chat, generate a very short (max 4 words) title.
+      Question: "${question}"
+      Answer: "${answer.slice(0, 100)}..."
+      
+      Title:
+    `;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().replace(/"/g, "").trim() || "New Chat";
+    res.json({ title: text });
+  } catch (error) {
+    console.error("AI Title Error:", error);
+    res.json({ title: "New Financial Chat" });
   }
 });
 
