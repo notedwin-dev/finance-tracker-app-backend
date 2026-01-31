@@ -49,24 +49,63 @@ const checkLimit = (req, res, next) => {
 };
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({
+  model: "gemini-2.0-flash",
+  tools: [
+    {
+      functionDeclarations: [
+        {
+          name: "get_historical_transactions",
+          description:
+            "Query all historical transactions (beyond the recent 50 provided in context). Use this to answer questions about past spending, trends, or specific shops not in the recent list.",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              searchKeyword: {
+                type: "STRING",
+                description: "Shop name or description to filter by",
+              },
+              startDate: {
+                type: "STRING",
+                description: "Start date in YYYY-MM-DD format",
+              },
+              endDate: {
+                type: "STRING",
+                description: "End date in YYYY-MM-DD format",
+              },
+              categoryName: {
+                type: "STRING",
+                description: "The name of the category to filter by",
+              },
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
 
 app.post("/ai/chat", checkLimit, async (req, res) => {
   const { history, context } = req.body;
 
-  // Set headers for streaming
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Transfer-Encoding", "chunked");
-
   try {
+    const snapshotTime = new Date().toLocaleString();
     const systemInstruction = `
       You are ZenFinance AI, a helpful and minimalist financial assistant. 
       Your goal is to provide clear, actionable financial advice based on the user's data.
-      
-      "Spending Limits" (formerly Pots) represent budget caps user set for themselves. 
-      "limitAmount" is the total budget, and "currentAmount" is how much they have left in the spending pot.      
 
-      Current Financial Context:
+      CRITICAL: Always prioritize the "Current Financial Context" provided below over any data mentioned in previous messages. 
+      The user's financial state (balances, goals, pots, subscriptions) may have changed since earlier in the conversation.
+      
+      "updatedAt" timestamps are provided for accounts, goals, and pots. Use these to determine how recently the data was modified.
+
+      "Spending Limits" (pots):
+      - "totalBudgetLimit" is the total budget for the period.
+      - "remainingAvailableBudget" is how much the user has LEFT to spend.
+      - Money Spent = totalBudgetLimit - remainingAvailableBudget.
+      - Spent Percentage = (Money Spent / totalBudgetLimit) * 100.
+
+      Current Financial Context (Snapshot Date/Time: ${snapshotTime}):
       ${JSON.stringify(context, null, 2)}
       
       Rules:
@@ -76,17 +115,36 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
       4. If asked about spending, reference their specific categories and limits.
       5. Never give professional investment advice; always include a disclaimer if needed but keep it brief.
       6. Always respond in the language the user is using.
-      7. At the end of your response, provide 3-4 follow-up suggestions.
+      7. Follow-up Suggestions (UI Elements):
+         At the very end of your response, provide 3-4 follow-up suggestions for the user.
+         These will be rendered as clickable UI buttons to help the user continue the conversation.
          The suggestions MUST be phrased from the USER'S perspective.
          Format:
          <suggestion>User Command 1</suggestion>
          <suggestion>User Command 2</suggestion>
+
+      TOOLS & SECURITY:
+      - You have access to tools to query historical transactions.
+      - When you use a tool, the user will be asked to APPROVE or REJECT the data access.
+      - If historical context for goals or pots is needed, look at related transactions using the tool.
     `;
+
     // Map history to Google's format
-    const contents = history.map((m) => ({
-      role: m.role === "user" ? "user" : "model",
-      parts: [{ text: m.content }],
-    }));
+    const contents = history.map((m) => {
+      if (m.functionResponse) {
+        return {
+          role: "function",
+          parts: [{ functionResponse: m.functionResponse }],
+        };
+      }
+      return {
+        role: m.role === "user" ? "user" : "model",
+        parts: [
+          ...(m.content ? [{ text: m.content }] : []),
+          ...(m.functionCall ? [{ functionCall: m.functionCall }] : []),
+        ],
+      };
+    });
 
     // Start chat with system instruction
     const chat = model.startChat({
@@ -97,18 +155,46 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
       },
     });
 
-    const lastMessage = history[history.length - 1].content;
-    const result = await chat.sendMessageStream(lastMessage);
+    const lastTurnParts = contents[contents.length - 1].parts;
+    const result = await chat.sendMessageStream(lastTurnParts);
+
+    let isFirstChunk = true;
 
     for await (const chunk of result.stream) {
+      if (isFirstChunk) {
+        const parts = chunk.candidates[0].content.parts;
+        const hasFunctionCall = parts.some((p) => p.functionCall);
+
+        if (hasFunctionCall) {
+          // If there's a function call, we don't stream, just send JSON
+          const functionCall = parts.find((p) => p.functionCall).functionCall;
+          const text = parts
+            .filter((p) => p.text)
+            .map((p) => p.text)
+            .join("");
+          res.json({ text, functionCall });
+          return;
+        }
+
+        // It's text, start streaming
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.setHeader("Transfer-Encoding", "chunked");
+        isFirstChunk = false;
+      }
+
       const chunkText = chunk.text();
       res.write(chunkText);
     }
     res.end();
   } catch (error) {
     console.error("AI Error:", error);
-    // If headers were already sent, we can't send a JSON error
     if (!res.headersSent) {
+      if (error.status === 429) {
+        return res.status(429).json({
+          error:
+            "Gemini API Quota Exceeded. Please try again in 30-60 seconds or check your API limits.",
+        });
+      }
       res.status(500).json({ error: "Failed to process AI request" });
     } else {
       res.end();
