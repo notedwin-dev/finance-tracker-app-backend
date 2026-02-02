@@ -1,8 +1,10 @@
-const express = require("express");
-const { OAuth2Client } = require("google-auth-library");
-const cors = require("cors");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-require("dotenv").config();
+import express from "express";
+import { OAuth2Client } from "google-auth-library";
+import cors from "cors";
+import { GoogleGenAI, Type } from "@google/genai";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 
@@ -48,42 +50,38 @@ const checkLimit = (req, res, next) => {
   next();
 };
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: "gemini-2.5-flash",
-  tools: [
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const historicalTransactionsTool = {
+  functionDeclarations: [
     {
-      functionDeclarations: [
-        {
-          name: "get_historical_transactions",
-          description:
-            "Query all historical transactions (beyond the recent 50 provided in context). Use this to answer questions about past spending, trends, or specific shops not in the recent list.",
-          parameters: {
-            type: "OBJECT",
-            properties: {
-              searchKeyword: {
-                type: "STRING",
-                description: "Shop name or description to filter by",
-              },
-              startDate: {
-                type: "STRING",
-                description: "Start date in YYYY-MM-DD format",
-              },
-              endDate: {
-                type: "STRING",
-                description: "End date in YYYY-MM-DD format",
-              },
-              categoryName: {
-                type: "STRING",
-                description: "The name of the category to filter by",
-              },
-            },
+      name: "get_historical_transactions",
+      description:
+        "Query all historical transactions (beyond the recent 50 provided in context). Use this to answer questions about past spending, trends, or specific shops not in the recent list.",
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          searchKeyword: {
+            type: Type.STRING,
+            description: "Shop name or description to filter by",
+          },
+          startDate: {
+            type: Type.STRING,
+            description: "Start date in YYYY-MM-DD format",
+          },
+          endDate: {
+            type: Type.STRING,
+            description: "End date in YYYY-MM-DD format",
+          },
+          categoryName: {
+            type: Type.STRING,
+            description: "The name of the category to filter by",
           },
         },
-      ],
+      },
     },
   ],
-});
+};
 
 app.post("/ai/chat", checkLimit, async (req, res) => {
   const { history, context } = req.body;
@@ -117,7 +115,7 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
       6. Always respond in the language the user is using.
       7. Follow-up Suggestions (UI Elements):
          At the very end of your response, provide 3-4 follow-up suggestions for the user.
-         These will be rendered as clickable UI buttons to help the user continue the conversation.
+         These will rendered as clickable UI buttons to help the user continue the conversation.
          The suggestions MUST be phrased from the USER'S perspective.
          Format:
          <suggestion>User Command 1</suggestion>
@@ -129,49 +127,61 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
       - If historical context for goals or pots is needed, look at related transactions using the tool.
     `;
 
-    // Map history to Google's format
+    // Map history to Google GenAI SDK format
     const contents = history.map((m) => {
       if (m.functionResponse) {
         return {
-          role: "function",
-          parts: [{ functionResponse: m.functionResponse }],
+          role: "tool",
+          parts: [
+            {
+              functionResponse: {
+                name: m.functionResponse.name,
+                response: m.functionResponse.response,
+              },
+            },
+          ],
         };
       }
       return {
         role: m.role === "user" ? "user" : "model",
         parts: [
           ...(m.content ? [{ text: m.content }] : []),
-          ...(m.functionCall ? [{ functionCall: m.functionCall }] : []),
+          ...(m.functionCall
+            ? [
+                {
+                  functionCall: {
+                    name: m.functionCall.name,
+                    args: m.functionCall.args,
+                  },
+                },
+              ]
+            : []),
         ],
       };
     });
 
     // Start chat with system instruction
-    const chat = model.startChat({
+    const chat = ai.chats.create({
+      model: "gemini-2.5-flash",
       history: contents.slice(0, -1),
-      systemInstruction: {
-        role: "system",
-        parts: [{ text: systemInstruction }],
+      config: {
+        systemInstruction: systemInstruction,
+        tools: [historicalTransactionsTool],
       },
     });
 
-    const lastTurnParts = contents[contents.length - 1].parts;
-    const result = await chat.sendMessageStream(lastTurnParts);
+    const lastTurn = contents[contents.length - 1];
+    const message = lastTurn.parts.find((p) => p.text)?.text || "";
+    const response = await chat.sendMessageStream(message);
 
     let isFirstChunk = true;
 
-    for await (const chunk of result.stream) {
+    for await (const chunk of response) {
       if (isFirstChunk) {
-        const parts = chunk.candidates[0].content.parts;
-        const hasFunctionCall = parts.some((p) => p.functionCall);
-
-        if (hasFunctionCall) {
+        if (chunk.functionCalls && chunk.functionCalls.length > 0) {
           // If there's a function call, we don't stream, just send JSON
-          const functionCall = parts.find((p) => p.functionCall).functionCall;
-          const text = parts
-            .filter((p) => p.text)
-            .map((p) => p.text)
-            .join("");
+          const functionCall = chunk.functionCalls[0];
+          const text = chunk.text || "";
           res.json({ text, functionCall });
           return;
         }
@@ -182,8 +192,9 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
         isFirstChunk = false;
       }
 
-      const chunkText = chunk.text();
-      res.write(chunkText);
+      if (chunk.text) {
+        res.write(chunk.text);
+      }
     }
     res.end();
   } catch (error) {
@@ -214,16 +225,18 @@ app.post("/ai/title", checkLimit, async (req, res) => {
       Title:
     `;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().replace(/"/g, "").trim() || "New Chat";
-    res.json({ title: text });
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+    });
+    res.json({ title: result.text.replace(/"/g, "").trim() || "New Chat" });
   } catch (error) {
     console.error("AI Title Error:", error);
     res.json({ title: "New Financial Chat" });
   }
 });
 
-const client = new OAuth2Client(
+const oauthClient = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   "postmessage", // Special value for 'auth-code' flow in @react-oauth/google
@@ -232,7 +245,7 @@ const client = new OAuth2Client(
 app.post("/auth/google", async (req, res) => {
   const { code } = req.body;
   try {
-    const { tokens } = await client.getToken(code);
+    const { tokens } = await oauthClient.getToken(code);
     // Tokens will contain access_token, refresh_token, etc.
     res.json(tokens);
   } catch (error) {
@@ -244,12 +257,12 @@ app.post("/auth/google", async (req, res) => {
 app.post("/auth/refresh", async (req, res) => {
   const { refresh_token } = req.body;
   try {
-    const user = new OAuth2Client(
+    const oauth = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
     );
-    user.setCredentials({ refresh_token });
-    const { token } = await user.getAccessToken();
+    oauth.setCredentials({ refresh_token });
+    const { token } = await oauth.getAccessToken();
     res.json({ access_token: token });
   } catch (error) {
     console.error("Error refreshing token:", error);
