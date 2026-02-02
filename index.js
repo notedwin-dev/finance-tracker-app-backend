@@ -226,7 +226,7 @@ app.post("/ai/title", checkLimit, async (req, res) => {
     `;
 
     const result = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
     });
     res.json({ title: result.text.replace(/"/g, "").trim() || "New Chat" });
