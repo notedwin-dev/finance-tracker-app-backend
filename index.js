@@ -52,7 +52,15 @@ const checkLimit = (req, res, next) => {
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const historicalTransactionsTool = {
+const normalizeFunctionResponsePayload = (payload) => {
+	if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+		return payload;
+	}
+
+	return { result: payload };
+};
+
+const assistantTools = {
 	functionDeclarations: [
 		{
 			name: "get_historical_transactions",
@@ -76,6 +84,50 @@ const historicalTransactionsTool = {
 					categoryName: {
 						type: Type.STRING,
 						description: "The name of the category to filter by",
+					},
+				},
+			},
+		},
+		{
+			name: "get_current_location",
+			description:
+				"Get the user's current GPS location from the device (requires user approval).",
+			parameters: {
+				type: Type.OBJECT,
+				properties: {},
+			},
+		},
+		{
+			name: "get_nearby_food",
+			description:
+				"Find nearby food places (restaurants, cafes, fast food) near provided coordinates or current device location.",
+			parameters: {
+				type: Type.OBJECT,
+				properties: {
+					latitude: {
+						type: Type.NUMBER,
+						description:
+							"Latitude in decimal degrees. Optional if current location tool can be used.",
+					},
+					longitude: {
+						type: Type.NUMBER,
+						description:
+							"Longitude in decimal degrees. Optional if current location tool can be used.",
+					},
+					radiusMeters: {
+						type: Type.NUMBER,
+						description:
+							"Search radius in meters. Use 500-2000 for walkable results.",
+					},
+					limit: {
+						type: Type.NUMBER,
+						description:
+							"Maximum number of places to return (recommended 5-15).",
+					},
+					cuisineKeyword: {
+						type: Type.STRING,
+						description:
+							"Optional keyword filter (e.g. ramen, coffee, halal, burger).",
 					},
 				},
 			},
@@ -133,12 +185,14 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
 
 			if (m.functionResponse) {
 				return {
-					role: "function",
+					role: "user",
 					parts: [
 						{
 							functionResponse: {
 								name: m.functionResponse.name,
-								response: m.functionResponse.response,
+								response: normalizeFunctionResponsePayload(
+									m.functionResponse.response,
+								),
 							},
 						},
 					],
@@ -160,12 +214,23 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
 			history: contents.slice(0, -1),
 			config: {
 				systemInstruction: systemInstruction,
-				tools: [historicalTransactionsTool],
+				tools: [assistantTools],
 			},
 		});
 
 		const lastTurn = contents[contents.length - 1];
-		const message = lastTurn.parts.find((p) => p.text)?.text || "";
+		const messagePart = lastTurn?.parts?.find(
+			(part) => typeof part?.text === "string",
+		);
+		const hasFunctionResponse = Boolean(
+			lastTurn?.parts?.some((part) => Boolean(part?.functionResponse)),
+		);
+		const message =
+			typeof messagePart?.text === "string"
+				? messagePart.text
+				: hasFunctionResponse
+					? "Continue based on the approved tool result and answer the user directly."
+					: "";
 		const response = await chat.sendMessageStream({ message });
 
 		let isFirstChunk = true;
