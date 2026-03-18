@@ -210,7 +210,7 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
 
 		// Start chat with system instruction
 		const chat = ai.chats.create({
-			model: "gemini-2.5-flash",
+			model: "gemini-3.1-flash-lite",
 			history: contents.slice(0, -1),
 			config: {
 				systemInstruction: systemInstruction,
@@ -285,7 +285,7 @@ app.post("/ai/title", checkLimit, async (req, res) => {
     `;
 
 		const result = await ai.models.generateContent({
-			model: "gemini-2.5-flash",
+			model: "gemini-3.1-flash-lite",
 			contents: prompt,
 		});
 		res.json({ title: result.text.replace(/"/g, "").trim() || "New Chat" });
