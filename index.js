@@ -10,22 +10,22 @@ const app = express();
 
 // Strict CORS to only allow specific origin
 const allowedOrigins = [
-  "https://finance.notedwin.dev",
-  process.env.NODE_ENV === "local" && "http://localhost:3000",
+	"https://finance.notedwin.dev",
+	process.env.NODE_ENV === "local" && "http://localhost:3000",
 ].filter(Boolean);
 app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl)
-      if (!origin) return callback(null, true);
+	cors({
+		origin: function (origin, callback) {
+			// Allow requests with no origin (like mobile apps or curl)
+			if (!origin) return callback(null, true);
 
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-  }),
+			if (allowedOrigins.indexOf(origin) !== -1) {
+				callback(null, true);
+			} else {
+				callback(new Error("Not allowed by CORS"));
+			}
+		},
+	}),
 );
 
 app.use(express.json());
@@ -35,60 +35,60 @@ const dailyUsage = new Map();
 const DAILY_LIMIT = 50;
 
 const checkLimit = (req, res, next) => {
-  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-  const today = new Date().toISOString().split("T")[0];
-  const key = `${ip}:${today}`;
+	const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+	const today = new Date().toISOString().split("T")[0];
+	const key = `${ip}:${today}`;
 
-  const currentUsage = dailyUsage.get(key) || 0;
-  if (currentUsage >= DAILY_LIMIT) {
-    return res.status(429).json({
-      error:
-        "Daily limit reached. Please provide your own API key in settings.",
-    });
-  }
-  dailyUsage.set(key, currentUsage + 1);
-  next();
+	const currentUsage = dailyUsage.get(key) || 0;
+	if (currentUsage >= DAILY_LIMIT) {
+		return res.status(429).json({
+			error:
+				"Daily limit reached. Please provide your own API key in settings.",
+		});
+	}
+	dailyUsage.set(key, currentUsage + 1);
+	next();
 };
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const historicalTransactionsTool = {
-  functionDeclarations: [
-    {
-      name: "get_historical_transactions",
-      description:
-        "Query all historical transactions (beyond the recent 50 provided in context). Use this to answer questions about past spending, trends, or specific shops not in the recent list.",
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          searchKeyword: {
-            type: Type.STRING,
-            description: "Shop name or description to filter by",
-          },
-          startDate: {
-            type: Type.STRING,
-            description: "Start date in YYYY-MM-DD format",
-          },
-          endDate: {
-            type: Type.STRING,
-            description: "End date in YYYY-MM-DD format",
-          },
-          categoryName: {
-            type: Type.STRING,
-            description: "The name of the category to filter by",
-          },
-        },
-      },
-    },
-  ],
+	functionDeclarations: [
+		{
+			name: "get_historical_transactions",
+			description:
+				"Query all historical transactions (beyond the recent 50 provided in context). Use this to answer questions about past spending, trends, or specific shops not in the recent list.",
+			parameters: {
+				type: Type.OBJECT,
+				properties: {
+					searchKeyword: {
+						type: Type.STRING,
+						description: "Shop name or description to filter by",
+					},
+					startDate: {
+						type: Type.STRING,
+						description: "Start date in YYYY-MM-DD format",
+					},
+					endDate: {
+						type: Type.STRING,
+						description: "End date in YYYY-MM-DD format",
+					},
+					categoryName: {
+						type: Type.STRING,
+						description: "The name of the category to filter by",
+					},
+				},
+			},
+		},
+	],
 };
 
 app.post("/ai/chat", checkLimit, async (req, res) => {
-  const { history, context } = req.body;
+	const { history, context } = req.body;
 
-  try {
-    const snapshotTime = new Date().toLocaleString();
-    const systemInstruction = `
+	try {
+		const snapshotTime = new Date().toLocaleString();
+		const systemInstruction = `
       You are ZenFinance AI, a helpful and minimalist financial assistant. 
       Your goal is to provide clear, actionable financial advice based on the user's data.
 
@@ -127,97 +127,91 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
       - If historical context for goals or pots is needed, look at related transactions using the tool.
     `;
 
-    // Map history to Google GenAI SDK format
-    const contents = history.map((m) => {
-      if (m.functionResponse) {
-        return {
-          role: "tool",
-          parts: [
-            {
-              functionResponse: {
-                name: m.functionResponse.name,
-                response: m.functionResponse.response,
-              },
-            },
-          ],
-        };
-      }
-      return {
-        role: m.role === "user" ? "user" : "model",
-        parts: [
-          ...(m.content ? [{ text: m.content }] : []),
-          ...(m.functionCall
-            ? [
-                {
-                  functionCall: {
-                    name: m.functionCall.name,
-                    args: m.functionCall.args,
-                  },
-                },
-              ]
-            : []),
-        ],
-      };
-    });
+		// Map history to Google GenAI SDK format
+		const contents = history.map((m) => {
+			const parts = [];
 
-    // Start chat with system instruction
-    const chat = ai.chats.create({
-      model: "gemini-2.5-flash",
-      history: contents.slice(0, -1),
-      config: {
-        systemInstruction: systemInstruction,
-        tools: [historicalTransactionsTool],
-      },
-    });
+			if (m.functionResponse) {
+				return {
+					role: "function",
+					parts: [
+						{
+							functionResponse: {
+								name: m.functionResponse.name,
+								response: m.functionResponse.response,
+							},
+						},
+					],
+				};
+			}
 
-    const lastTurn = contents[contents.length - 1];
-    const message = lastTurn.parts.find((p) => p.text)?.text || "";
-    const response = await chat.sendMessageStream(message);
+			if (m.content) parts.push({ text: m.content });
+			if (m.functionCall) parts.push({ functionCall: m.functionCall });
 
-    let isFirstChunk = true;
+			return {
+				role: m.role === "user" ? "user" : "model",
+				parts,
+			};
+		});
 
-    for await (const chunk of response) {
-      if (isFirstChunk) {
-        if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-          // If there's a function call, we don't stream, just send JSON
-          const functionCall = chunk.functionCalls[0];
-          const text = chunk.text || "";
-          res.json({ text, functionCall });
-          return;
-        }
+		// Start chat with system instruction
+		const chat = ai.chats.create({
+			model: "gemini-2.5-flash",
+			history: contents.slice(0, -1),
+			config: {
+				systemInstruction: systemInstruction,
+				tools: [historicalTransactionsTool],
+			},
+		});
 
-        // It's text, start streaming
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.setHeader("Transfer-Encoding", "chunked");
-        isFirstChunk = false;
-      }
+		const lastTurn = contents[contents.length - 1];
+		const message = lastTurn.parts.find((p) => p.text)?.text || "";
+		const response = await chat.sendMessageStream({ message });
 
-      if (chunk.text) {
-        res.write(chunk.text);
-      }
-    }
-    res.end();
-  } catch (error) {
-    console.error("AI Error:", error);
-    if (!res.headersSent) {
-      if (error.status === 429) {
-        return res.status(429).json({
-          error:
-            "Gemini API Quota Exceeded. Please try again in 30-60 seconds or check your API limits.",
-        });
-      }
-      res.status(500).json({ error: "Failed to process AI request" });
-    } else {
-      res.end();
-    }
-  }
+		let isFirstChunk = true;
+
+		for await (const chunk of response) {
+			if (isFirstChunk) {
+				if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+					// If there's a function call, we don't stream, just send JSON
+					const functionCall = chunk.functionCalls[0];
+					const text = chunk.text || "";
+					res.json({ text, functionCall });
+					return;
+				}
+
+				// It's text, start streaming
+				res.setHeader("Content-Type", "text/plain; charset=utf-8");
+				res.setHeader("Transfer-Encoding", "chunked");
+				isFirstChunk = false;
+			}
+
+			if (chunk.text) {
+				res.write(chunk.text);
+			}
+		}
+		res.end();
+	} catch (error) {
+		console.error("AI Error:", error);
+		if (!res.headersSent) {
+			if (error.status === 429) {
+				return res.status(429).json({
+					error:
+						"Gemini API Quota Exceeded. Please try again in 30-60 seconds or check your API limits.",
+				});
+			}
+			res.status(500).json({ error: "Failed to process AI request" });
+		} else {
+			res.end();
+		}
+	}
 });
 
 app.post("/ai/title", checkLimit, async (req, res) => {
-  const { question, answer } = req.body;
+	const { question, answer } = req.body;
 
-  try {
-    const prompt = `
+	try {
+		const prompt = `
       Based on this first exchange in a financial chat, generate a very short (max 4 words) title.
       Question: "${question}"
       Answer: "${answer.slice(0, 100)}..."
@@ -225,52 +219,52 @@ app.post("/ai/title", checkLimit, async (req, res) => {
       Title:
     `;
 
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-    });
-    res.json({ title: result.text.replace(/"/g, "").trim() || "New Chat" });
-  } catch (error) {
-    console.error("AI Title Error:", error);
-    res.json({ title: "New Financial Chat" });
-  }
+		const result = await ai.models.generateContent({
+			model: "gemini-2.5-flash",
+			contents: prompt,
+		});
+		res.json({ title: result.text.replace(/"/g, "").trim() || "New Chat" });
+	} catch (error) {
+		console.error("AI Title Error:", error);
+		res.json({ title: "New Financial Chat" });
+	}
 });
 
 const oauthClient = new OAuth2Client(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  "postmessage", // Special value for 'auth-code' flow in @react-oauth/google
+	process.env.GOOGLE_CLIENT_ID,
+	process.env.GOOGLE_CLIENT_SECRET,
+	"postmessage", // Special value for 'auth-code' flow in @react-oauth/google
 );
 
 app.post("/auth/google", async (req, res) => {
-  const { code } = req.body;
-  try {
-    const { tokens } = await oauthClient.getToken(code);
-    // Tokens will contain access_token, refresh_token, etc.
-    res.json(tokens);
-  } catch (error) {
-    console.error("Error exchanging code for tokens:", error);
-    res.status(500).json({ error: "Failed to exchange code" });
-  }
+	const { code } = req.body;
+	try {
+		const { tokens } = await oauthClient.getToken(code);
+		// Tokens will contain access_token, refresh_token, etc.
+		res.json(tokens);
+	} catch (error) {
+		console.error("Error exchanging code for tokens:", error);
+		res.status(500).json({ error: "Failed to exchange code" });
+	}
 });
 
 app.post("/auth/refresh", async (req, res) => {
-  const { refresh_token } = req.body;
-  try {
-    const oauth = new OAuth2Client(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-    );
-    oauth.setCredentials({ refresh_token });
-    const { token } = await oauth.getAccessToken();
-    res.json({ access_token: token });
-  } catch (error) {
-    console.error("Error refreshing token:", error);
-    res.status(500).json({ error: "Failed to refresh token" });
-  }
+	const { refresh_token } = req.body;
+	try {
+		const oauth = new OAuth2Client(
+			process.env.GOOGLE_CLIENT_ID,
+			process.env.GOOGLE_CLIENT_SECRET,
+		);
+		oauth.setCredentials({ refresh_token });
+		const { token } = await oauth.getAccessToken();
+		res.json({ access_token: token });
+	} catch (error) {
+		console.error("Error refreshing token:", error);
+		res.status(500).json({ error: "Failed to refresh token" });
+	}
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
+	console.log(`Backend running on port ${PORT}`);
 });
