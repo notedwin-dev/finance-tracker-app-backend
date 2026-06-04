@@ -11,7 +11,9 @@ const app = express();
 // Strict CORS to only allow specific origin
 const allowedOrigins = [
 	"https://finance.notedwin.dev",
+	"https://staging.finance.notedwin.dev",
 	process.env.NODE_ENV === "local" && "http://localhost:3000",
+	"http://localhost:5173",
 ].filter(Boolean);
 app.use(
 	cors({
@@ -141,12 +143,12 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
 	try {
 		const snapshotTime = new Date().toLocaleString();
 		const systemInstruction = `
-      You are ZenFinance AI, a helpful and minimalist financial assistant. 
+      You are ZenFinance AI, a helpful and minimalist financial assistant.
       Your goal is to provide clear, actionable financial advice based on the user's data.
 
-      CRITICAL: Always prioritize the "Current Financial Context" provided below over any data mentioned in previous messages. 
+      CRITICAL: Always prioritize the "Current Financial Context" provided below over any data mentioned in previous messages.
       The user's financial state (balances, goals, pots, subscriptions) may have changed since earlier in the conversation.
-      
+
       "updatedAt" timestamps are provided for accounts, goals, and pots. Use these to determine how recently the data was modified.
 
       "Spending Limits" (pots):
@@ -157,7 +159,7 @@ app.post("/ai/chat", checkLimit, async (req, res) => {
 
       Current Financial Context (Snapshot Date/Time: ${snapshotTime}):
       ${JSON.stringify(context, null, 2)}
-      
+
       Rules:
       1. Be concise and friendly.
       2. Use Markdown for formatting. Use headers (###), bold text, and bullet points to make info digestible.
@@ -280,7 +282,7 @@ app.post("/ai/title", checkLimit, async (req, res) => {
       Based on this first exchange in a financial chat, generate a very short (max 4 words) title.
       Question: "${question}"
       Answer: "${answer.slice(0, 100)}..."
-      
+
       Title:
     `;
 
