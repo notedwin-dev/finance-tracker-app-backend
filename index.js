@@ -305,18 +305,30 @@ const oauthClient = new OAuth2Client(
 
 app.post("/auth/google", async (req, res) => {
 	const { code } = req.body;
+	if (!code || typeof code !== "string") {
+		return res.status(400).json({ error: "code is required" });
+	}
 	try {
 		const { tokens } = await oauthClient.getToken(code);
 		// Tokens will contain access_token, refresh_token, etc.
 		res.json(tokens);
 	} catch (error) {
-		console.error("Error exchanging code for tokens:", error);
+		// Log only the message: google-auth-library errors can carry the
+		// request payload (the one-time authorization code) in internal
+		// fields, and Vercel logs are retained.
+		console.error(
+			"Error exchanging code for tokens:",
+			error instanceof Error ? error.message : String(error),
+		);
 		res.status(500).json({ error: "Failed to exchange code" });
 	}
 });
 
 app.post("/auth/refresh", async (req, res) => {
 	const { refresh_token } = req.body;
+	if (!refresh_token || typeof refresh_token !== "string") {
+		return res.status(400).json({ error: "refresh_token is required" });
+	}
 	try {
 		const oauth = new OAuth2Client(
 			process.env.GOOGLE_CLIENT_ID,
@@ -326,7 +338,13 @@ app.post("/auth/refresh", async (req, res) => {
 		const { token } = await oauth.getAccessToken();
 		res.json({ access_token: token });
 	} catch (error) {
-		console.error("Error refreshing token:", error);
+		// Log only the message: google-auth-library/Gaxios errors can carry
+		// the request payload (the user's refresh token) in internal fields,
+		// and Vercel logs are retained.
+		console.error(
+			"Error refreshing token:",
+			error instanceof Error ? error.message : String(error),
+		);
 		res.status(500).json({ error: "Failed to refresh token" });
 	}
 });
