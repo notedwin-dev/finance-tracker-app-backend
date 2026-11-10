@@ -304,7 +304,7 @@ const oauthClient = new OAuth2Client(
 );
 
 app.post("/auth/google", async (req, res) => {
-	const { code } = req.body;
+	const { code } = req.body ?? {};
 	if (!code || typeof code !== "string") {
 		return res.status(400).json({ error: "code is required" });
 	}
@@ -325,7 +325,7 @@ app.post("/auth/google", async (req, res) => {
 });
 
 app.post("/auth/refresh", async (req, res) => {
-	const { refresh_token } = req.body;
+	const { refresh_token } = req.body ?? {};
 	if (!refresh_token || typeof refresh_token !== "string") {
 		return res.status(400).json({ error: "refresh_token is required" });
 	}
